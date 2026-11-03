@@ -1,0 +1,22 @@
+name: Build release FAP
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    if: github.event.release.prerelease == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build external app
+        uses: flipperdevices/flipperzero-ufbt-action@v0.1.0
+        with:
+          app: .
+      - name: Attach FAP to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*.fap

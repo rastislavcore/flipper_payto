@@ -1,0 +1,25 @@
+name: Bug report
+description: Report a reproducible problem with PayTo Wallets.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected instead.
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Flipper firmware
+      placeholder: Official 0.XX.X / Xtreme ...
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true

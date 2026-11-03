@@ -1,0 +1,10 @@
+App(
+	appid="flipper_payto",
+	name="PayTo Wallets",
+	entry_point="flipper_payto_app",
+	apptype=FlipperAppType.EXTERNAL,
+	version="0.1",
+	requires=["gui", "nfc", "storage", "dialogs"],
+	sources=["flipper_payto.c", "payto.c"],
+	stack_size=4 * 1024,
+)
