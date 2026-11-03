@@ -12,8 +12,8 @@
 #include <nfc/nfc_listener.h>
 #include <nfc/nfc_poller.h>
 #include <nfc/nfc_scanner.h>
-#include <nfc/protocols/type_4_tag/type_4_tag.h>
-#include <nfc/protocols/type_4_tag/type_4_tag_poller.h>
+#include <lib/nfc/protocols/mf_ultralight/mf_ultralight.h>
+#include <lib/nfc/protocols/mf_ultralight/mf_ultralight_poller.h>
 #include <storage/storage.h>
 
 #define PAYTO_STORAGE_PATH EXT_PATH("apps_data/flipper_payto/wallets.txt")
@@ -41,7 +41,7 @@ typedef struct {
 	NfcScanner* scanner;
 	NfcPoller* poller;
 	NfcListener* listener;
-	Type4TagData* emulation;
+	MfUltralightData* emulation;
 	PaytoWallet wallets[PAYTO_MAX_WALLETS];
 	size_t wallet_count;
 	PaytoWallet pending;
@@ -51,6 +51,24 @@ typedef struct {
 
 static void payto_menu_callback(void* context, uint32_t index);
 static void payto_show_pending_actions(PaytoApp* app);
+
+static bool payto_parse_ntag_ndef(const MfUltralightData* data, PaytoWallet* wallet) {
+	const size_t byte_count = (size_t)data->pages_read * MF_ULTRALIGHT_PAGE_SIZE;
+	const uint8_t* bytes = (const uint8_t*)data->page;
+	for(size_t i = 4; i + 2 < byte_count; i++) {
+		if(bytes[i] != 0x03) continue;
+		size_t ndef_length = bytes[i + 1];
+		size_t payload_offset = i + 2;
+		if(ndef_length == 0xFF) {
+			if(i + 4 > byte_count) return false;
+			ndef_length = ((size_t)bytes[i + 2] << 8) | bytes[i + 3];
+			payload_offset = i + 4;
+		}
+		if(payload_offset + ndef_length > byte_count) return false;
+		return payto_parse_ndef(bytes + payload_offset, ndef_length, wallet);
+	}
+	return false;
+}
 
 static NfcCommand payto_listener_callback(NfcGenericEvent event, void* context) {
 	UNUSED(event);
@@ -81,10 +99,13 @@ static void payto_load_wallets(PaytoApp* app) {
 	}
 	char data[PAYTO_MAX_WALLETS * (PAYTO_MAX_URI_LEN + PAYTO_MAX_NAME_LEN + 2)] = {0};
 	size_t length = storage_file_read(file, data, sizeof(data) - 1);
+	data[length] = '\0';
 	storage_file_close(file);
 	storage_file_free(file);
-	char* line = strtok(data, "\n");
-	while(line && app->wallet_count < PAYTO_MAX_WALLETS) {
+	char* line = data;
+	while(*line && app->wallet_count < PAYTO_MAX_WALLETS) {
+		char* next_line = strchr(line, '\n');
+		if(next_line) *next_line = '\0';
 		char* separator = strchr(line, '\t');
 		if(separator) {
 			*separator++ = '\0';
@@ -95,7 +116,8 @@ static void payto_load_wallets(PaytoApp* app) {
 				app->wallet_count++;
 			}
 		}
-		line = strtok(NULL, "\n");
+		if(!next_line) break;
+		line = next_line + 1;
 	}
 }
 
@@ -106,9 +128,11 @@ static void payto_rebuild_menu(PaytoApp* app) {
 	submenu_add_item(app->menu, "Enter manually", PAYTO_MENU_MANUAL, payto_menu_callback, app);
 	for(size_t i = 0; i < app->wallet_count; i++) {
 		char label[PAYTO_SHORT_NAME_LEN + PAYTO_MAX_NAME_LEN + 4];
-		snprintf(label, sizeof(label), "%s%s%s", app->wallets[i].short_name,
-			app->wallets[i].name[0] ? " (" : "", app->wallets[i].name);
-		if(app->wallets[i].name[0]) strncat(label, ")", sizeof(label) - strlen(label) - 1);
+		snprintf(label, sizeof(label), "%s", app->wallets[i].short_name);
+		if(app->wallets[i].name[0]) {
+			size_t label_length = strlen(label);
+			snprintf(label + label_length, sizeof(label) - label_length, " (%s)", app->wallets[i].name);
+		}
 		submenu_add_item(app->menu, label, PAYTO_MENU_WALLET + i, payto_menu_callback, app);
 	}
 }
@@ -128,26 +152,25 @@ static void payto_stop_nfc(PaytoApp* app) {
 
 static NfcCommand payto_poller_callback(NfcGenericEvent event, void* context) {
 	PaytoApp* app = context;
-	Type4TagPollerEvent* tag_event = event.event_data;
-	if(tag_event->type == Type4TagPollerEventTypeReadSuccess) {
-		const Type4TagData* data = nfc_poller_get_data(app->poller);
-		if(simple_array_get_count(data->ndef_data) > 0 &&
-			payto_parse_ndef(simple_array_cget_data(data->ndef_data), simple_array_get_count(data->ndef_data), &app->pending)) {
+	MfUltralightPollerEvent* tag_event = event.event_data;
+	if(tag_event->type == MfUltralightPollerEventTypeReadSuccess) {
+		const MfUltralightData* data = nfc_poller_get_data(app->poller);
+		if(payto_parse_ntag_ndef(data, &app->pending)) {
 			view_dispatcher_send_custom_event(app->dispatcher, PAYTO_EVENT_SCANNED);
 		}
 		return NfcCommandStop;
 	}
-	return tag_event->type == Type4TagPollerEventTypeReadFailed ? NfcCommandReset : NfcCommandContinue;
+	return tag_event->type == MfUltralightPollerEventTypeReadFailed ? NfcCommandReset : NfcCommandContinue;
 }
 
 static void payto_scanner_callback(NfcScannerEvent event, void* context) {
 	PaytoApp* app = context;
 	for(size_t i = 0; i < event.data.protocol_num; i++) {
-		if(event.data.protocols[i] == NfcProtocolType4Tag) {
+		if(event.data.protocols[i] == NfcProtocolMfUltralight) {
 			nfc_scanner_stop(app->scanner);
 			if(app->poller) nfc_poller_free(app->poller);
 			app->poller = NULL;
-			app->poller = nfc_poller_alloc(app->nfc, NfcProtocolType4Tag);
+			app->poller = nfc_poller_alloc(app->nfc, NfcProtocolMfUltralight);
 			nfc_poller_start(app->poller, payto_poller_callback, app);
 			return;
 		}
@@ -178,7 +201,7 @@ static void payto_manual_input_done(void* context) {
 	if(strncasecmp(entry, "payto://", 8) == 0) {
 		snprintf(uri, sizeof(uri), "%s", entry);
 	} else {
-		snprintf(uri, sizeof(uri), "payto://%s", entry);
+		snprintf(uri, sizeof(uri), "payto://%.183s", entry);
 	}
 	if(payto_parse_uri(uri, &app->pending)) {
 		payto_show_pending_actions(app);
@@ -226,19 +249,24 @@ static void payto_menu_callback(void* context, uint32_t index) {
 	else if(index == PAYTO_MENU_DISCARD) payto_rebuild_menu(app);
 	else if(index >= PAYTO_MENU_WALLET && index < PAYTO_MENU_WALLET + app->wallet_count) {
 		PaytoWallet* wallet = &app->wallets[index - PAYTO_MENU_WALLET];
-		if(app->emulation) type_4_tag_free(app->emulation);
-		app->emulation = type_4_tag_alloc();
+		if(app->emulation) mf_ultralight_free(app->emulation);
+		app->emulation = mf_ultralight_alloc();
+		app->emulation->type = MfUltralightTypeNTAG213;
+		app->emulation->pages_total = mf_ultralight_get_pages_total(app->emulation->type);
 		const size_t uri_length = strlen(wallet->uri);
 		const size_t ndef_length = uri_length + 5;
-		simple_array_init(app->emulation->ndef_data, ndef_length);
-		uint8_t* ndef = simple_array_get_data(app->emulation->ndef_data);
-		ndef[0] = 0xD1;
-		ndef[1] = 0x01;
-		ndef[2] = uri_length + 1;
-		ndef[3] = 'U';
-		ndef[4] = 0;
-		memcpy(&ndef[5], wallet->uri, uri_length);
-		app->listener = nfc_listener_alloc(app->nfc, NfcProtocolType4Tag, app->emulation);
+		uint8_t* ndef = (uint8_t*)app->emulation->page;
+		ndef[4 * MF_ULTRALIGHT_PAGE_SIZE] = 0x03;
+		ndef[4 * MF_ULTRALIGHT_PAGE_SIZE + 1] = ndef_length;
+		ndef[4 * MF_ULTRALIGHT_PAGE_SIZE + 2] = 0xD1;
+		ndef[4 * MF_ULTRALIGHT_PAGE_SIZE + 3] = 0x01;
+		ndef[4 * MF_ULTRALIGHT_PAGE_SIZE + 4] = uri_length + 1;
+		ndef[4 * MF_ULTRALIGHT_PAGE_SIZE + 5] = 'U';
+		ndef[4 * MF_ULTRALIGHT_PAGE_SIZE + 6] = 0;
+		memcpy(&ndef[4 * MF_ULTRALIGHT_PAGE_SIZE + 7], wallet->uri, uri_length);
+		ndef[4 * MF_ULTRALIGHT_PAGE_SIZE + ndef_length + 2] = 0xFE;
+		app->emulation->pages_read = app->emulation->pages_total;
+		app->listener = nfc_listener_alloc(app->nfc, NfcProtocolMfUltralight, app->emulation);
 		nfc_listener_start(app->listener, payto_listener_callback, app);
 		submenu_set_header(app->menu, "Streaming NFC");
 	}
@@ -293,7 +321,7 @@ int32_t flipper_payto_app(void* context) {
 		nfc_listener_stop(app.listener);
 		nfc_listener_free(app.listener);
 	}
-	if(app.emulation) type_4_tag_free(app.emulation);
+	if(app.emulation) mf_ultralight_free(app.emulation);
 	nfc_free(app.nfc);
 	view_dispatcher_remove_view(app.dispatcher, PaytoViewMenu);
 	view_dispatcher_remove_view(app.dispatcher, PaytoViewName);

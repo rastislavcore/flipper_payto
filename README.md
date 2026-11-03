@@ -21,7 +21,7 @@ Install [ufbt](https://github.com/flipperdevices/flipperzero-ufbt), then run:
 ufbt launch
 ```
 
-The release workflow builds and attaches `flipper_payto.fap` when a published, non-pre-release GitHub release is published. Copy the FAP to the Flipper SD card at `apps/NFC/`.
+The release workflow builds and attaches `flipper_payto.fap` when a GitHub release is published and is not a prerelease. Copy the FAP to the Flipper SD card at `apps/NFC/`.
 
 Host-side parser tests run with:
 
@@ -31,7 +31,7 @@ make test
 
 ## Flow
 
-Choose **Scan NFC** and present an NFC tag containing a URI NDEF record beginning with `payto://`. **Enter manually** is also available for typing the currency/address portion, such as `xcb/cb7147879011ea207df5b35a24ca6f0859dcfb145999`; the app adds `payto://` automatically. After a successful parse, choose **Save unnamed** or **Add name**. Selecting a saved wallet starts NFC Type 4 Tag emulation with that PayTo URI.
+Choose **Scan NFC** and present an NTAG/Mifare Ultralight NFC tag containing a URI NDEF record beginning with `payto://`. **Enter manually** is also available for typing the currency/address portion, such as `xcb/cb7147879011ea207df5b35a24ca6f0859dcfb145999`; the app adds `payto://` automatically. After a successful parse, choose **Save unnamed** or **Add name**. Selecting a saved wallet starts NFC NDEF emulation with that PayTo URI.
 
 ## License
 

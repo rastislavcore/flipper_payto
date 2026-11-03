@@ -15,7 +15,7 @@ make test
 Build the FAP locally with:
 
 ```sh
-ufbt build
+ufbt faps
 ```
 
 ## Code guidelines
@@ -30,7 +30,7 @@ ufbt build
 
 Use the provided issue templates for bug reports and feature requests. Blank issues are disabled; include reproduction steps or a concrete use case.
 
-Pull requests should explain the behavior change and include the relevant test results. For NFC changes, describe the tag type and NDEF payload used for testing.
+Pull requests should explain the behavior change and include the relevant test results. For NFC changes, describe the NTAG/Mifare Ultralight tag type and NDEF payload used for testing.
 
 ## Releases
 

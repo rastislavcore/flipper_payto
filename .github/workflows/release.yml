@@ -16,6 +16,7 @@ jobs:
         uses: flipperdevices/flipperzero-ufbt-action@v0.1.4
         with:
           app-dir: .
+          ufbt-args: "faps"
       - name: Attach FAP to release
         uses: softprops/action-gh-release@v2
         with:
