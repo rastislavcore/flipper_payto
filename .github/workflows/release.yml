@@ -13,9 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build external app
-        uses: flipperdevices/flipperzero-ufbt-action@v0.1.0
+        uses: flipperdevices/flipperzero-ufbt-action@v0.1.4
         with:
-          app: .
+          app-dir: .
       - name: Attach FAP to release
         uses: softprops/action-gh-release@v2
         with:

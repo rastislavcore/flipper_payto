@@ -34,7 +34,7 @@ Pull requests should explain the behavior change and include the relevant test r
 
 ## Releases
 
-The release workflow builds and attaches the FAP when a GitHub release is published and is not marked as a prerelease. The regular build workflow also runs on pushes to `main` and can be started manually.
+The release workflow builds and attaches the FAP when a GitHub release is published and is not marked as a prerelease. The regular build workflow also runs on pushes to `main` and can be started manually. Both workflows use the official ufbt action with its `app-dir` input.
 
 ## License
 

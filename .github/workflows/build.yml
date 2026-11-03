@@ -11,9 +11,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build external app
-        uses: flipperdevices/flipperzero-ufbt-action@v0.1.0
+        uses: flipperdevices/flipperzero-ufbt-action@v0.1.4
         with:
-          app: .
+          app-dir: .
       - name: Upload FAP artifact
         uses: actions/upload-artifact@v4
         with:
