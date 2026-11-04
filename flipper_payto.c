@@ -28,6 +28,7 @@
 #define PAYTO_MENU_WALLET 100
 #define PAYTO_NDEF_OFFSET (4 * MF_ULTRALIGHT_PAGE_SIZE)
 #define PAYTO_WALLET_FILE_BUFFER_SIZE (PAYTO_MAX_WALLETS * (PAYTO_MAX_URI_LEN + PAYTO_MAX_NAME_LEN + 2))
+#define PAYTO_EVENT_START_POLLER 2
 
 typedef enum {
 	PaytoViewMenu,
@@ -51,10 +52,12 @@ typedef struct {
 	char pending_name[PAYTO_MAX_NAME_LEN + 1];
 	char manual_entry[PAYTO_MAX_URI_LEN];
 	char wallet_file_data[PAYTO_WALLET_FILE_BUFFER_SIZE];
+	bool scanner_transition_pending;
 } PaytoApp;
 
 static void payto_menu_callback(void* context, uint32_t index);
 static void payto_show_pending_actions(PaytoApp* app);
+static NfcCommand payto_poller_callback(NfcGenericEvent event, void* context);
 
 static bool payto_parse_ntag_ndef(const MfUltralightData* data, PaytoWallet* wallet) {
 	const size_t byte_count = (size_t)data->pages_read * MF_ULTRALIGHT_PAGE_SIZE;
@@ -153,6 +156,15 @@ static void payto_stop_nfc(PaytoApp* app) {
 	}
 }
 
+static void payto_start_poller(PaytoApp* app) {
+	if(app->poller) {
+		nfc_poller_stop(app->poller);
+		nfc_poller_free(app->poller);
+	}
+	app->poller = nfc_poller_alloc(app->nfc, NfcProtocolMfUltralight);
+	nfc_poller_start(app->poller, payto_poller_callback, app);
+}
+
 static NfcCommand payto_poller_callback(NfcGenericEvent event, void* context) {
 	PaytoApp* app = context;
 	MfUltralightPollerEvent* tag_event = event.event_data;
@@ -170,11 +182,10 @@ static void payto_scanner_callback(NfcScannerEvent event, void* context) {
 	PaytoApp* app = context;
 	for(size_t i = 0; i < event.data.protocol_num; i++) {
 		if(event.data.protocols[i] == NfcProtocolMfUltralight) {
-			nfc_scanner_stop(app->scanner);
-			if(app->poller) nfc_poller_free(app->poller);
-			app->poller = NULL;
-			app->poller = nfc_poller_alloc(app->nfc, NfcProtocolMfUltralight);
-			nfc_poller_start(app->poller, payto_poller_callback, app);
+			if(!app->scanner_transition_pending) {
+				app->scanner_transition_pending = true;
+				view_dispatcher_send_custom_event(app->dispatcher, PAYTO_EVENT_START_POLLER);
+			}
 			return;
 		}
 	}
@@ -282,7 +293,16 @@ static void payto_menu_callback(void* context, uint32_t index) {
 
 static bool payto_custom_event(void* context, uint32_t event) {
 	PaytoApp* app = context;
-	if(event == PAYTO_EVENT_SCANNED) {
+	if(event == PAYTO_EVENT_START_POLLER) {
+		app->scanner_transition_pending = false;
+		if(app->scanner) {
+			nfc_scanner_stop(app->scanner);
+			nfc_scanner_free(app->scanner);
+			app->scanner = NULL;
+		}
+		payto_start_poller(app);
+		return true;
+	} else if(event == PAYTO_EVENT_SCANNED) {
 		payto_stop_nfc(app);
 		payto_show_pending_actions(app);
 		return true;
