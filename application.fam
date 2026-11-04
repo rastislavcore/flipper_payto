@@ -3,6 +3,8 @@ App(
 	name="PayTo Wallets",
 	entry_point="flipper_payto_app",
 	apptype=FlipperAppType.EXTERNAL,
+	fap_category="NFC",
+	fap_author="Rastislav Core",
 	fap_version="0.1",
 	requires=["gui", "nfc", "storage", "dialogs"],
 	sources=["flipper_payto.c", "payto.c"],
