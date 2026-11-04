@@ -33,6 +33,14 @@ make test
 
 Choose **Scan NFC** and present an NTAG/Mifare Ultralight NFC tag containing a URI NDEF record beginning with `payto://`. **Enter manually** is also available for typing the currency/address portion, such as `xcb/cb7147879011ea207df5b35a24ca6f0859dcfb145999`; the app adds `payto://` automatically. After a successful parse, choose **Save unnamed** or **Add name**. Selecting a saved wallet starts NFC NDEF emulation with that PayTo URI.
 
+## Screenshots
+
+![PayTo Wallets main menu](screenshots/01_main_menu.png)
+
+![Enter wallet menu](screenshots/02_enter_wallet.png)
+
+![NFC scanning screen](screenshots/03_scanning_nfc.png)
+
 ## License
 
 Released under the CORE License. See [LICENSE](LICENSE).
