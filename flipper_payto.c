@@ -1,6 +1,7 @@
 #include "payto.h"
 
 #include <furi.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -25,6 +26,8 @@
 #define PAYTO_MENU_NAME 3
 #define PAYTO_MENU_DISCARD 4
 #define PAYTO_MENU_WALLET 100
+#define PAYTO_NDEF_OFFSET (4 * MF_ULTRALIGHT_PAGE_SIZE)
+#define PAYTO_WALLET_FILE_BUFFER_SIZE (PAYTO_MAX_WALLETS * (PAYTO_MAX_URI_LEN + PAYTO_MAX_NAME_LEN + 2))
 
 typedef enum {
 	PaytoViewMenu,
@@ -47,6 +50,7 @@ typedef struct {
 	PaytoWallet pending;
 	char pending_name[PAYTO_MAX_NAME_LEN + 1];
 	char manual_entry[PAYTO_MAX_URI_LEN];
+	char wallet_file_data[PAYTO_WALLET_FILE_BUFFER_SIZE];
 } PaytoApp;
 
 static void payto_menu_callback(void* context, uint32_t index);
@@ -97,12 +101,11 @@ static void payto_load_wallets(PaytoApp* app) {
 		storage_file_free(file);
 		return;
 	}
-	char data[PAYTO_MAX_WALLETS * (PAYTO_MAX_URI_LEN + PAYTO_MAX_NAME_LEN + 2)] = {0};
-	size_t length = storage_file_read(file, data, sizeof(data) - 1);
-	data[length] = '\0';
+	size_t length = storage_file_read(file, app->wallet_file_data, sizeof(app->wallet_file_data) - 1);
+	app->wallet_file_data[length] = '\0';
 	storage_file_close(file);
 	storage_file_free(file);
-	char* line = data;
+	char* line = app->wallet_file_data;
 	while(*line && app->wallet_count < PAYTO_MAX_WALLETS) {
 		char* next_line = strchr(line, '\n');
 		if(next_line) *next_line = '\0';
@@ -249,22 +252,27 @@ static void payto_menu_callback(void* context, uint32_t index) {
 	else if(index == PAYTO_MENU_DISCARD) payto_rebuild_menu(app);
 	else if(index >= PAYTO_MENU_WALLET && index < PAYTO_MENU_WALLET + app->wallet_count) {
 		PaytoWallet* wallet = &app->wallets[index - PAYTO_MENU_WALLET];
+		const size_t uri_length = strlen(wallet->uri);
+		const size_t ndef_length = uri_length + 5;
+		const size_t emulation_size = (size_t)mf_ultralight_get_pages_total(MfUltralightTypeNTAG213) * MF_ULTRALIGHT_PAGE_SIZE;
+		if(ndef_length > 255 || PAYTO_NDEF_OFFSET + 2 + ndef_length + 1 > emulation_size) {
+			submenu_set_header(app->menu, "URI too long for NTAG213");
+			return;
+		}
 		if(app->emulation) mf_ultralight_free(app->emulation);
 		app->emulation = mf_ultralight_alloc();
 		app->emulation->type = MfUltralightTypeNTAG213;
 		app->emulation->pages_total = mf_ultralight_get_pages_total(app->emulation->type);
-		const size_t uri_length = strlen(wallet->uri);
-		const size_t ndef_length = uri_length + 5;
 		uint8_t* ndef = (uint8_t*)app->emulation->page;
-		ndef[4 * MF_ULTRALIGHT_PAGE_SIZE] = 0x03;
-		ndef[4 * MF_ULTRALIGHT_PAGE_SIZE + 1] = ndef_length;
-		ndef[4 * MF_ULTRALIGHT_PAGE_SIZE + 2] = 0xD1;
-		ndef[4 * MF_ULTRALIGHT_PAGE_SIZE + 3] = 0x01;
-		ndef[4 * MF_ULTRALIGHT_PAGE_SIZE + 4] = uri_length + 1;
-		ndef[4 * MF_ULTRALIGHT_PAGE_SIZE + 5] = 'U';
-		ndef[4 * MF_ULTRALIGHT_PAGE_SIZE + 6] = 0;
-		memcpy(&ndef[4 * MF_ULTRALIGHT_PAGE_SIZE + 7], wallet->uri, uri_length);
-		ndef[4 * MF_ULTRALIGHT_PAGE_SIZE + ndef_length + 2] = 0xFE;
+		ndef[PAYTO_NDEF_OFFSET] = 0x03;
+		ndef[PAYTO_NDEF_OFFSET + 1] = (uint8_t)ndef_length;
+		ndef[PAYTO_NDEF_OFFSET + 2] = 0xD1;
+		ndef[PAYTO_NDEF_OFFSET + 3] = 0x01;
+		ndef[PAYTO_NDEF_OFFSET + 4] = (uint8_t)(uri_length + 1);
+		ndef[PAYTO_NDEF_OFFSET + 5] = 'U';
+		ndef[PAYTO_NDEF_OFFSET + 6] = 0;
+		memcpy(&ndef[PAYTO_NDEF_OFFSET + 7], wallet->uri, uri_length);
+		ndef[PAYTO_NDEF_OFFSET + ndef_length + 2] = 0xFE;
 		app->emulation->pages_read = app->emulation->pages_total;
 		app->listener = nfc_listener_alloc(app->nfc, NfcProtocolMfUltralight, app->emulation);
 		nfc_listener_start(app->listener, payto_listener_callback, app);
@@ -299,36 +307,39 @@ static uint32_t payto_exit(void* context) {
 
 int32_t flipper_payto_app(void* context) {
 	UNUSED(context);
-	PaytoApp app = {0};
-	app.gui = furi_record_open(RECORD_GUI);
-	app.storage = furi_record_open(RECORD_STORAGE);
-	app.nfc = nfc_alloc();
-	app.dispatcher = view_dispatcher_alloc();
-	view_dispatcher_set_event_callback_context(app.dispatcher, &app);
-	view_dispatcher_set_custom_event_callback(app.dispatcher, payto_custom_event);
-	view_dispatcher_attach_to_gui(app.dispatcher, app.gui, ViewDispatcherTypeFullscreen);
-	app.menu = submenu_alloc();
-	app.text_input = text_input_alloc();
-	view_set_previous_callback(submenu_get_view(app.menu), payto_exit);
-	view_dispatcher_add_view(app.dispatcher, PaytoViewMenu, submenu_get_view(app.menu));
-	view_dispatcher_add_view(app.dispatcher, PaytoViewName, text_input_get_view(app.text_input));
-	payto_load_wallets(&app);
-	payto_rebuild_menu(&app);
-	view_dispatcher_switch_to_view(app.dispatcher, PaytoViewMenu);
-	view_dispatcher_run(app.dispatcher);
-	payto_stop_nfc(&app);
-	if(app.listener) {
-		nfc_listener_stop(app.listener);
-		nfc_listener_free(app.listener);
+	PaytoApp* app = malloc(sizeof(PaytoApp));
+	if(!app) return -1;
+	memset(app, 0, sizeof(PaytoApp));
+	app->gui = furi_record_open(RECORD_GUI);
+	app->storage = furi_record_open(RECORD_STORAGE);
+	app->nfc = nfc_alloc();
+	app->dispatcher = view_dispatcher_alloc();
+	view_dispatcher_set_event_callback_context(app->dispatcher, app);
+	view_dispatcher_set_custom_event_callback(app->dispatcher, payto_custom_event);
+	view_dispatcher_attach_to_gui(app->dispatcher, app->gui, ViewDispatcherTypeFullscreen);
+	app->menu = submenu_alloc();
+	app->text_input = text_input_alloc();
+	view_set_previous_callback(submenu_get_view(app->menu), payto_exit);
+	view_dispatcher_add_view(app->dispatcher, PaytoViewMenu, submenu_get_view(app->menu));
+	view_dispatcher_add_view(app->dispatcher, PaytoViewName, text_input_get_view(app->text_input));
+	payto_load_wallets(app);
+	payto_rebuild_menu(app);
+	view_dispatcher_switch_to_view(app->dispatcher, PaytoViewMenu);
+	view_dispatcher_run(app->dispatcher);
+	payto_stop_nfc(app);
+	if(app->listener) {
+		nfc_listener_stop(app->listener);
+		nfc_listener_free(app->listener);
 	}
-	if(app.emulation) mf_ultralight_free(app.emulation);
-	nfc_free(app.nfc);
-	view_dispatcher_remove_view(app.dispatcher, PaytoViewMenu);
-	view_dispatcher_remove_view(app.dispatcher, PaytoViewName);
-	submenu_free(app.menu);
-	text_input_free(app.text_input);
-	view_dispatcher_free(app.dispatcher);
+	if(app->emulation) mf_ultralight_free(app->emulation);
+	nfc_free(app->nfc);
+	view_dispatcher_remove_view(app->dispatcher, PaytoViewMenu);
+	view_dispatcher_remove_view(app->dispatcher, PaytoViewName);
+	submenu_free(app->menu);
+	text_input_free(app->text_input);
+	view_dispatcher_free(app->dispatcher);
 	furi_record_close(RECORD_STORAGE);
 	furi_record_close(RECORD_GUI);
+	free(app);
 	return 0;
 }
