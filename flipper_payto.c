@@ -76,11 +76,17 @@ typedef struct {
 	size_t selected_wallet;
 } PaytoApp;
 
+static char payto_streaming_name[PAYTO_SHORT_NAME_LEN];
+
 static void payto_menu_callback(void* context, uint32_t index);
 static void payto_show_pending_actions(PaytoApp* app);
 static NfcCommand payto_poller_callback(NfcGenericEvent event, void* context);
+static void payto_stop_stream(PaytoApp* app);
 
 static void payto_switch_view(PaytoApp* app, PaytoView view) {
+	if(app->active_view == PaytoViewStream && view != PaytoViewStream) {
+		payto_stop_stream(app);
+	}
 	app->active_view = view;
 	view_dispatcher_switch_to_view(app->dispatcher, view);
 }
@@ -95,6 +101,7 @@ static void payto_stop_listener(PaytoApp* app) {
 
 static void payto_stop_stream(PaytoApp* app) {
 	payto_stop_listener(app);
+	if(app->notifications) notification_message(app->notifications, &sequence_blink_stop);
 	if(app->emulation) {
 		nfc_device_free(app->emulation);
 		app->emulation = NULL;
@@ -207,11 +214,10 @@ static void payto_scan_draw(Canvas* canvas, void* context) {
 }
 
 static void payto_stream_draw(Canvas* canvas, void* context) {
-	PaytoApp* app = context;
+	UNUSED(context);
 	canvas_set_font(canvas, FontPrimary);
 	canvas_draw_str_aligned(canvas, 64, 24, AlignCenter, AlignCenter, "Streaming NFC:");
-	canvas_set_font(canvas, FontSecondary);
-	canvas_draw_str_aligned(canvas, 64, 42, AlignCenter, AlignCenter, app->streaming_name);
+	canvas_draw_str_aligned(canvas, 64, 42, AlignCenter, AlignCenter, payto_streaming_name);
 }
 
 static NfcCommand payto_poller_callback(NfcGenericEvent event, void* context) {
@@ -292,24 +298,28 @@ static void payto_rebuild_wallet_actions(PaytoApp* app) {
 	submenu_reset(app->wallet_actions);
 	submenu_set_header(app->wallet_actions, wallet->name[0] ? wallet->name : wallet->short_name);
 	submenu_add_item(app->wallet_actions, "Stream NFC", PAYTO_MENU_STREAM, payto_menu_callback, app);
-	submenu_add_item(app->wallet_actions, "Print Wallet", PAYTO_MENU_PRINT, payto_menu_callback, app);
+	submenu_add_item(app->wallet_actions, "Show Wallet", PAYTO_MENU_PRINT, payto_menu_callback, app);
 	submenu_add_item(app->wallet_actions, "Remove", PAYTO_MENU_REMOVE, payto_menu_callback, app);
 }
 
 static void payto_stream_wallet(PaytoApp* app, PaytoWallet* wallet) {
+	FURI_LOG_I("PayTo", "stream begin");
 	const size_t uri_length = strlen(wallet->uri);
 	const size_t ndef_length = uri_length + 5;
 	if(ndef_length > 255) {
 		submenu_set_header(app->wallet_actions, "URI too long for NFC");
 		return;
 	}
+	payto_stop_nfc(app);
 	payto_stop_stream(app);
 	app->emulation = nfc_device_alloc();
+	FURI_LOG_I("PayTo", "device allocated");
 	if(!app->emulation) {
 		submenu_set_header(app->wallet_actions, "NFC unavailable");
 		return;
 	}
 	nfc_data_generator_fill_data(NfcDataGeneratorTypeNTAG215, app->emulation);
+	FURI_LOG_I("PayTo", "device data generated");
 	const MfUltralightData* original = nfc_device_get_data(app->emulation, NfcProtocolMfUltralight);
 	if(!original || !original->iso14443_3a_data) {
 		nfc_device_free(app->emulation);
@@ -317,17 +327,25 @@ static void payto_stream_wallet(PaytoApp* app, PaytoWallet* wallet) {
 		submenu_set_header(app->wallet_actions, "NFC data unavailable");
 		return;
 	}
-	MfUltralightData* data = mf_ultralight_alloc();
-	if(!data) {
+	FURI_LOG_I("PayTo", "source data valid");
+	MfUltralightData* data = malloc(sizeof(MfUltralightData));
+	Iso14443_3aData* iso_data = malloc(sizeof(Iso14443_3aData));
+	if(!data || !iso_data) {
+		free(data);
+		free(iso_data);
 		nfc_device_free(app->emulation);
 		app->emulation = NULL;
 		submenu_set_header(app->wallet_actions, "Not enough memory");
 		return;
 	}
-	nfc_device_copy_data(app->emulation, NfcProtocolMfUltralight, data);
+	memcpy(data, original, sizeof(MfUltralightData));
+	memcpy(iso_data, original->iso14443_3a_data, sizeof(Iso14443_3aData));
+	data->iso14443_3a_data = iso_data;
+	FURI_LOG_I("PayTo", "data copied");
 	const size_t emulation_size = (size_t)data->pages_total * MF_ULTRALIGHT_PAGE_SIZE;
 	if(PAYTO_NDEF_OFFSET + 2 + ndef_length + 1 > emulation_size) {
-		mf_ultralight_free(data);
+		free(iso_data);
+		free(data);
 		nfc_device_free(app->emulation);
 		app->emulation = NULL;
 		submenu_set_header(app->wallet_actions, "URI too long for NFC");
@@ -345,7 +363,9 @@ static void payto_stream_wallet(PaytoApp* app, PaytoWallet* wallet) {
 	ndef[PAYTO_NDEF_OFFSET + ndef_length + 2] = 0xFE;
 	data->pages_read = data->pages_total;
 	nfc_device_set_data(app->emulation, NfcProtocolMfUltralight, data);
-	mf_ultralight_free(data);
+	FURI_LOG_I("PayTo", "data installed");
+	free(iso_data);
+	free(data);
 	const MfUltralightData* listener_data = nfc_device_get_data(app->emulation, NfcProtocolMfUltralight);
 	if(!listener_data) {
 		nfc_device_free(app->emulation);
@@ -354,6 +374,7 @@ static void payto_stream_wallet(PaytoApp* app, PaytoWallet* wallet) {
 		return;
 	}
 	app->listener = nfc_listener_alloc(app->nfc, NfcProtocolMfUltralight, listener_data);
+	FURI_LOG_I("PayTo", "listener allocated");
 	if(!app->listener) {
 		nfc_device_free(app->emulation);
 		app->emulation = NULL;
@@ -361,7 +382,16 @@ static void payto_stream_wallet(PaytoApp* app, PaytoWallet* wallet) {
 		return;
 	}
 	nfc_listener_start(app->listener, NULL, NULL);
-	snprintf(app->streaming_name, sizeof(app->streaming_name), "%s", wallet->name[0] ? wallet->name : wallet->short_name);
+	FURI_LOG_I("PayTo", "listener started");
+	if(!app->notifications) app->notifications = furi_record_open(RECORD_NOTIFICATION);
+	if(app->notifications) notification_message(app->notifications, &sequence_blink_start_magenta);
+	if(wallet->name[0]) {
+		const size_t address_length = strlen(wallet->address);
+		const char* suffix = address_length >= 4 ? wallet->address + address_length - 4 : wallet->address;
+		snprintf(payto_streaming_name, sizeof(payto_streaming_name), "%s (%s)", wallet->name, suffix);
+	} else {
+		snprintf(payto_streaming_name, sizeof(payto_streaming_name), "%s", wallet->short_name);
+	}
 	payto_switch_view(app, PaytoViewStream);
 }
 
@@ -441,7 +471,6 @@ static bool payto_navigation_callback(void* context) {
 		return true;
 	}
 	if(app->active_view == PaytoViewStream) {
-		payto_stop_stream(app);
 		payto_switch_view(app, PaytoViewWalletActions);
 		return true;
 	}
